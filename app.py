@@ -8,7 +8,7 @@ import re
 import zipfile
 from io import BytesIO
 import shutil
-import requests  # Adding requests for synchronous fetching
+import requests
 
 file_types = [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv"]
 
@@ -22,6 +22,15 @@ if "log_messages" not in st.session_state:
 if "download_ready" not in st.session_state:
     st.session_state.download_ready = False
 
+def sanitize_folder_name(folder_name):
+    """Sanitizes a folder name by removing invalid characters."""
+    return re.sub(r'[\\/*?:"<>|]', "_", folder_name)
+
+def create_level_folder(base_download_folder, level):
+    """Creates a level-specific folder if it doesn't exist."""
+    level_folder_path = os.path.join(base_download_folder, f"level_{level}")
+    os.makedirs(level_folder_path, exist_ok=True)
+    return level_folder_path
 
 def download_file_sync(url, download_folder, headers):
     try:
@@ -65,7 +74,6 @@ def download_file_sync(url, download_folder, headers):
     except OSError as e:
         st.session_state.log_messages.append(f"Failed to save {url}: {e}")
 
-
 async def download_file(session, url, download_folder, headers):
     if st.session_state.stop_scraping:
         return
@@ -106,11 +114,12 @@ async def download_file(session, url, download_folder, headers):
                     file.write(chunk)
             if st.session_state.stop_scraping:
                 st.session_state.log_messages.append("Stopping download in progress.")
+            else:
+                st.session_state.log_messages.append(f"Downloaded: {filepath}")
     except asyncio.CancelledError:
         st.session_state.log_messages.append(f"Cancelled download for {url}")
     except Exception as e:
         st.session_state.log_messages.append(f"Failed to download {url}: {e}")
-
 
 async def extract_links(soup, base_url, headers):
     links = set()
@@ -172,7 +181,6 @@ async def extract_links(soup, base_url, headers):
 
     return links
 
-
 def remove_unwanted_elements(soup):
     selectors_to_remove = ['nav', 'header', 'footer']
     for selector in selectors_to_remove:
@@ -180,10 +188,8 @@ def remove_unwanted_elements(soup):
             element.decompose()
     return soup
 
-
 def is_document_url(url):
     return any(url.lower().endswith(ext) for ext in file_types)
-
 
 async def scrape_and_download(session, url, base_download_folder, visited_urls, base_domain, headers, level=1,
                               max_depth=3):
@@ -193,19 +199,18 @@ async def scrape_and_download(session, url, base_download_folder, visited_urls, 
     if level > max_depth:
         return
 
+    if url in visited_urls:
+        return
+
     st.session_state.log_messages.append(f"Processing URL: {url} at level {level}")
+    visited_urls.add(url)
+
     try:
-        if url in visited_urls:
-            st.session_state.log_messages.append(f"Skipping already visited URL: {url}")
-            return
-
-        visited_urls.add(url)
-
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
-        level_folder = os.path.join(base_download_folder, f"level_{level}")
-        os.makedirs(level_folder, exist_ok=True)
+        # Create the base domain folder directly under "downloads"
+        level_folder_path = create_level_folder(base_download_folder, level)
 
         async with session.get(url, headers=headers) as response:
             response.raise_for_status()
@@ -218,10 +223,10 @@ async def scrape_and_download(session, url, base_download_folder, visited_urls, 
                 st.session_state.log_messages.append("Stopping the scraping process.")
                 break
             if is_document_url(link):
-                await download_file(session, link, level_folder, headers)
+                st.session_state.log_messages.append(f"Processing URL: {link}")
+                await download_file(session, link, level_folder_path, headers)
             else:
-                # Synchronously download if async fails
-                download_file_sync(link, level_folder, headers)
+                download_file_sync(link, level_folder_path, headers)
             if st.session_state.stop_scraping:
                 break
 
@@ -241,7 +246,6 @@ async def scrape_and_download(session, url, base_download_folder, visited_urls, 
     except Exception as e:
         st.session_state.log_messages.append(f"Error fetching the URL: {e}")
 
-
 async def zip_folder(folder_path):
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -251,7 +255,6 @@ async def zip_folder(folder_path):
                 zip_file.write(file_path, os.path.relpath(file_path, folder_path))
     buffer.seek(0)
     return buffer
-
 
 async def main_scraping(urls, headers, max_depth):
     visited_urls = set()
@@ -264,20 +267,19 @@ async def main_scraping(urls, headers, max_depth):
 
     async with aiohttp.ClientSession() as session:
         tasks = [
-            scrape_and_download(session, url, os.path.join(base_download_folder, urlparse(url).netloc), visited_urls,
+            scrape_and_download(session, url, os.path.join(base_download_folder, sanitize_folder_name(urlparse(url).netloc)), visited_urls,
                                 urlparse(url).netloc, headers, max_depth=max_depth) for url in urls]
         await asyncio.gather(*tasks, return_exceptions=True)
 
     st.session_state.log_messages.append("Scraping completed successfully!")
     st.session_state.download_ready = True
 
-
 async def update_logs():
     while not st.session_state.stop_scraping and not st.session_state.download_ready:
         if st.session_state.log_messages:
             st.text("\n".join(st.session_state.log_messages))
+            st.session_state.log_messages = []  # Clear messages after displaying
         await asyncio.sleep(1)
-
 
 async def run_app():
     st.title("Web Scraper")
@@ -335,10 +337,14 @@ async def run_app():
             update_logs()
         )
 
+        if not st.session_state.stop_scraping:
+            st.success("Scraping completed successfully!")
+
     if stop_button:
         st.session_state.stop_scraping = True
         st.session_state.download_ready = True
         st.warning("Scraping has been stopped.")
+        st.success("Scraping completed successfully!")
 
     if st.session_state.download_ready:
         if os.path.exists("downloads"):
@@ -349,7 +355,6 @@ async def run_app():
                 file_name="scraped_files.zip",
                 mime="application/zip"
             )
-
 
 if __name__ == "__main__":
     asyncio.run(run_app())
