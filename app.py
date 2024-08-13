@@ -9,10 +9,11 @@ import zipfile
 from io import BytesIO
 import shutil
 import requests
+import time  # Import the time module
 
 file_types = [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv"]
 
-# Initialize stop flag and log container in Streamlit session state
+# Initialize stop flag, log container, and timing in Streamlit session state
 if "stop_scraping" not in st.session_state:
     st.session_state.stop_scraping = False
 
@@ -21,6 +22,9 @@ if "log_messages" not in st.session_state:
 
 if "download_ready" not in st.session_state:
     st.session_state.download_ready = False
+
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
 
 def sanitize_folder_name(folder_name):
     """Sanitizes a folder name by removing invalid characters."""
@@ -325,6 +329,7 @@ async def run_app():
         st.session_state.stop_scraping = False
         st.session_state.log_messages = []
         st.session_state.download_ready = False
+        st.session_state.start_time = time.time()  # Start the timer
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
@@ -338,12 +343,14 @@ async def run_app():
         )
 
         if not st.session_state.stop_scraping:
-            st.success("Scraping completed successfully!")
+            total_time = time.time() - st.session_state.start_time
+            st.success(f"Scraping completed successfully in {total_time:.2f} seconds!")
 
     if stop_button:
         st.session_state.stop_scraping = True
         st.session_state.download_ready = True
-        st.warning("Scraping has been stopped.")
+        total_time = time.time() - st.session_state.start_time
+        st.warning(f"Scraping has been stopped. Total time taken: {total_time:.2f} seconds.")
         st.success("Scraping completed successfully!")
 
     if st.session_state.download_ready:
